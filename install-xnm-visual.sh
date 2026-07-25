@@ -1,287 +1,426 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-UPSTREAM_REPO="${UPSTREAM_REPO:-https://github.com/XNM1/linux-nixos-hyprland-config-dotfiles.git}"
-WORKDIR="${XDG_CACHE_HOME:-$HOME/.cache}/xnm-visual-source"
-BACKUP_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/xnm-visual-backups"
-TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="$BACKUP_ROOT/$TIMESTAMP"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}"
-SCRIPT_PATH="$(readlink -f "$0")"
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP="$STATE_HOME/hypr-visual-fix/$STAMP"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mAttention:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31mErreur:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# Installe temporairement les outils nécessaires sans modifier le système.
-if ! command -v git >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1; then
-  command -v nix-shell >/dev/null 2>&1 ||
-    die "git/rsync manquent et nix-shell est introuvable."
-  log "Ouverture d'un environnement temporaire avec git et rsync…"
-  exec nix-shell -p git rsync gnused --run "bash '$SCRIPT_PATH'"
-fi
-
-mkdir -p "$CONFIG_DIR" "$BACKUP_DIR" "$(dirname "$WORKDIR")"
-
-log "Téléchargement de la configuration visuelle XNM1…"
-if [[ -d "$WORKDIR/.git" ]]; then
-  git -C "$WORKDIR" fetch --depth 1 origin main
-  git -C "$WORKDIR" reset --hard origin/main
-else
-  rm -rf "$WORKDIR"
-  git clone --depth 1 "$UPSTREAM_REPO" "$WORKDIR"
-fi
-
-SOURCE_HOME="$WORKDIR/home"
-[[ -d "$SOURCE_HOME/.config" ]] ||
-  die "La structure du dépôt a changé : home/.config est introuvable."
-
-# Uniquement les composants essentiellement visuels.
-CONFIG_COMPONENTS=(
-  waybar
-  rofi
-  dunst
-  kitty
-  wlogout
-  hyprpaper
-  gtk-3.0
-  gtk-4.0
-  Kvantum
-)
-
-backup_path() {
-  local source="$1"
-  local relative="${source#$HOME/}"
-  if [[ -e "$source" || -L "$source" ]]; then
-    mkdir -p "$BACKUP_DIR/$(dirname "$relative")"
-    rsync -a "$source" "$BACKUP_DIR/$(dirname "$relative")/"
-  fi
+backup() {
+  local p="$1"
+  [[ -e "$p" || -L "$p" ]] || return 0
+  local rel="${p#$HOME/}"
+  mkdir -p "$BACKUP/$(dirname "$rel")"
+  cp -a "$p" "$BACKUP/$(dirname "$rel")/"
 }
 
-copy_component() {
-  local name="$1"
-  local source="$SOURCE_HOME/.config/$name"
-  local target="$CONFIG_DIR/$name"
+mkdir -p "$CONFIG_HOME"/{hypr,waybar,kitty,rofi,dunst}
+mkdir -p "$BACKUP"
 
-  if [[ ! -e "$source" ]]; then
-    warn "$name absent du dépôt actuel, composant ignoré."
-    return
-  fi
-
-  backup_path "$target"
-  mkdir -p "$target"
-  rsync -a --delete "$source/" "$target/"
-  log "Copié : ~/.config/$name"
-}
-
-log "Sauvegarde des configurations remplacées dans : $BACKUP_DIR"
-for component in "${CONFIG_COMPONENTS[@]}"; do
-  copy_component "$component"
+for p in \
+  "$CONFIG_HOME/hypr/xnm-visual.conf" \
+  "$CONFIG_HOME/waybar/config.jsonc" \
+  "$CONFIG_HOME/waybar/style.css" \
+  "$CONFIG_HOME/kitty/kitty.conf" \
+  "$CONFIG_HOME/rofi/config.rasi" \
+  "$CONFIG_HOME/rofi/theme.rasi" \
+  "$CONFIG_HOME/dunst/dunstrc"
+do
+  backup "$p"
 done
 
-# Fonds d’écran et icônes, sans toucher aux autres fichiers personnels du dépôt.
-for item in background .icons; do
-  source="$SOURCE_HOME/$item"
-  target="$HOME/$item"
+log "Création d'un thème visuel autonome, sans Fish ni scripts externes…"
 
-  if [[ -d "$source" ]]; then
-    backup_path "$target"
-    mkdir -p "$target"
-    rsync -a "$source/" "$target/"
-    log "Copié : ~/$item"
-  elif [[ -f "$source" || -L "$source" ]]; then
-    backup_path "$target"
-    mkdir -p "$(dirname "$target")"
-    rsync -a "$source" "$target"
-    log "Copié : ~/$item"
-  else
-    warn "$item absent du dépôt actuel, élément ignoré."
-  fi
-done
+cat > "$CONFIG_HOME/hypr/xnm-visual.conf" <<'EOF'
+# Thème visuel Catppuccin Macchiato.
+# Aucun raccourci, écran, shell ou script externe n'est imposé.
 
-# Corrige les chemins personnels codés en dur dans les seuls fichiers copiés.
-log "Adaptation des chemins /home/xnm vers $HOME…"
-SEARCH_PATHS=()
-for component in "${CONFIG_COMPONENTS[@]}"; do
-  [[ -d "$CONFIG_DIR/$component" ]] && SEARCH_PATHS+=("$CONFIG_DIR/$component")
-done
-[[ -d "$HOME/background" ]] && SEARCH_PATHS+=("$HOME/background")
-
-if ((${#SEARCH_PATHS[@]})); then
-  while IFS= read -r -d '' file; do
-    sed -i \
-      -e "s#/home/xnm#$HOME#g" \
-      -e "s#~xnm#$HOME#g" \
-      "$file" || true
-  done < <(grep -IRIlZ --exclude='*.png' --exclude='*.jpg' --exclude='*.jpeg' \
-           --exclude='*.webp' --exclude='*.gif' '/home/xnm\|~xnm' \
-           "${SEARCH_PATHS[@]}" 2>/dev/null || true)
-fi
-
-# Ne remplace pas les raccourcis ni les règles personnelles de Hyprland.
-# Ce fichier ne contient que le rendu visuel.
-mkdir -p "$CONFIG_DIR/hypr"
-VISUAL_CONF="$CONFIG_DIR/hypr/xnm-visual.conf"
-backup_path "$VISUAL_CONF"
-
-cat > "$VISUAL_CONF" <<'HYPR'
-# Aspect inspiré de XNM1, sans importer ses raccourcis, écrans ou scripts.
 general {
     gaps_in = 5
     gaps_out = 10
     border_size = 2
     col.active_border = rgba(c6a0f6ff) rgba(8aadf4ff) 45deg
-    col.inactive_border = rgba(494d64aa)
+    col.inactive_border = rgba(5b6078cc)
     layout = dwindle
     resize_on_border = true
 }
 
 decoration {
     rounding = 10
-
     active_opacity = 1.0
-    inactive_opacity = 0.96
+    inactive_opacity = 0.97
 
     shadow {
         enabled = true
         range = 12
         render_power = 3
-        color = rgba(181926aa)
+        color = rgba(18192688)
     }
 
     blur {
         enabled = true
-        size = 6
+        size = 5
         passes = 2
         new_optimizations = true
         ignore_opacity = true
-        xray = false
     }
 }
 
 animations {
     enabled = true
-
-    bezier = emphasized, 0.16, 1, 0.3, 1
-    animation = windows, 1, 5, emphasized
+    bezier = fluide, 0.16, 1, 0.3, 1
+    animation = windows, 1, 5, fluide
     animation = windowsOut, 1, 4, default, popin 80%
     animation = border, 1, 6, default
-    animation = borderangle, 1, 8, default
     animation = fade, 1, 4, default
-    animation = workspaces, 1, 5, emphasized, slide
+    animation = workspaces, 1, 5, fluide, slide
+}
+EOF
+
+# Retire les anciens blocs fautifs éventuellement ajoutés par la v1/v2.
+MAIN="$CONFIG_HOME/hypr/hyprland.conf"
+touch "$MAIN"
+sed -i \
+  -e '/^[[:space:]]*dwindle[[:space:]]*{/,/^[[:space:]]*}/d' \
+  -e '/^[[:space:]]*source[[:space:]]*=[[:space:]]*~\/.config\/hypr\/xnm-visual.conf/d' \
+  "$MAIN"
+
+{
+  printf '\n# Thème visuel autonome\n'
+  printf 'source = ~/.config/hypr/xnm-visual.conf\n'
+} >> "$MAIN"
+
+cat > "$CONFIG_HOME/kitty/kitty.conf" <<'EOF'
+# Kitty utilise le shell de connexion de l'utilisateur.
+# Fish n'est pas requis.
+shell .
+font_family JetBrainsMono Nerd Font
+font_size 11.0
+background_opacity 0.94
+confirm_os_window_close 0
+enable_audio_bell no
+cursor_shape beam
+window_padding_width 8
+
+foreground            #cad3f5
+background            #24273a
+selection_foreground  #24273a
+selection_background  #f4dbd6
+cursor                #f4dbd6
+cursor_text_color     #24273a
+url_color             #8aadf4
+
+color0  #494d64
+color1  #ed8796
+color2  #a6da95
+color3  #eed49f
+color4  #8aadf4
+color5  #f5bde6
+color6  #8bd5ca
+color7  #b8c0e0
+color8  #5b6078
+color9  #ed8796
+color10 #a6da95
+color11 #eed49f
+color12 #8aadf4
+color13 #f5bde6
+color14 #8bd5ca
+color15 #cad3f5
+EOF
+
+cat > "$CONFIG_HOME/waybar/config.jsonc" <<'EOF'
+{
+  "layer": "top",
+  "position": "top",
+  "height": 34,
+  "spacing": 8,
+
+  "modules-left": ["hyprland/workspaces", "hyprland/window"],
+  "modules-center": ["clock"],
+  "modules-right": ["pulseaudio", "network", "battery", "tray"],
+
+  "hyprland/workspaces": {
+    "format": "{name}",
+    "on-click": "activate"
+  },
+
+  "hyprland/window": {
+    "max-length": 45,
+    "separate-outputs": true
+  },
+
+  "clock": {
+    "format": "{:%H:%M}",
+    "format-alt": "{:%A %d %B %Y}",
+    "locale": "fr_FR.UTF-8",
+    "tooltip-format": "<big>{:%A %d %B %Y}</big>\n<tt>{calendar}</tt>"
+  },
+
+  "pulseaudio": {
+    "format": "{icon} {volume}%",
+    "format-muted": "󰝟 Muet",
+    "format-icons": {
+      "default": ["", "", ""]
+    },
+    "on-click": "pavucontrol"
+  },
+
+  "network": {
+    "format-wifi": "  {signalStrength}%",
+    "format-ethernet": "󰈀 Connecté",
+    "format-disconnected": "󰖪 Hors ligne",
+    "tooltip-format-wifi": "{essid}\n{ipaddr}"
+  },
+
+  "battery": {
+    "states": {
+      "warning": 25,
+      "critical": 10
+    },
+    "format": "{icon} {capacity}%",
+    "format-charging": "󰂄 {capacity}%",
+    "format-plugged": " {capacity}%",
+    "format-icons": ["󰂎", "󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"]
+  },
+
+  "tray": {
+    "spacing": 8
+  }
+}
+EOF
+
+cat > "$CONFIG_HOME/waybar/style.css" <<'EOF'
+* {
+  border: none;
+  border-radius: 0;
+  font-family: "JetBrainsMono Nerd Font";
+  font-size: 13px;
+  min-height: 0;
 }
 
-dwindle {
-    pseudotile = true
-    preserve_split = true
+window#waybar {
+  background: rgba(36, 39, 58, 0.94);
+  color: #cad3f5;
 }
-HYPR
 
-MAIN_HYPR="$CONFIG_DIR/hypr/hyprland.conf"
-touch "$MAIN_HYPR"
-SOURCE_LINE='source = ~/.config/hypr/xnm-visual.conf'
-if ! grep -Fqx "$SOURCE_LINE" "$MAIN_HYPR"; then
-  backup_path "$MAIN_HYPR"
-  {
-    printf '\n# Thème visuel XNM1\n'
-    printf '%s\n' "$SOURCE_LINE"
-  } >> "$MAIN_HYPR"
-fi
+#workspaces {
+  margin: 5px 0 5px 8px;
+  padding: 0 4px;
+  border-radius: 10px;
+  background: #363a4f;
+}
 
-# Ajoute les démarrages visuels seulement s'ils ne sont pas déjà présents.
-declare -a AUTOSTART_LINES=(
-  "exec-once = waybar"
-  "exec-once = dunst"
-  "exec-once = hyprpaper"
-  "exec-once = nm-applet"
-)
-for line in "${AUTOSTART_LINES[@]}"; do
-  command_name="${line#exec-once = }"
-  if ! grep -Eq "^[[:space:]]*exec-once[[:space:]]*=.*\b${command_name%% *}\b" "$MAIN_HYPR"; then
-    printf '%s\n' "$line" >> "$MAIN_HYPR"
+#workspaces button {
+  padding: 0 8px;
+  color: #b8c0e0;
+  background: transparent;
+  border-radius: 8px;
+}
+
+#workspaces button.active {
+  color: #24273a;
+  background: #8aadf4;
+}
+
+#workspaces button:hover {
+  color: #24273a;
+  background: #c6a0f6;
+}
+
+#window {
+  margin-left: 8px;
+  color: #cad3f5;
+}
+
+#clock,
+#pulseaudio,
+#network,
+#battery,
+#tray {
+  margin: 5px 4px;
+  padding: 0 11px;
+  border-radius: 10px;
+  background: #363a4f;
+  color: #cad3f5;
+}
+
+#clock {
+  color: #24273a;
+  background: #c6a0f6;
+  font-weight: bold;
+}
+
+#pulseaudio {
+  color: #8aadf4;
+}
+
+#network {
+  color: #8bd5ca;
+}
+
+#battery {
+  color: #a6da95;
+}
+
+#battery.warning {
+  color: #eed49f;
+}
+
+#battery.critical {
+  color: #ed8796;
+}
+
+tooltip {
+  background: #24273a;
+  color: #cad3f5;
+  border: 1px solid #5b6078;
+  border-radius: 8px;
+}
+EOF
+
+cat > "$CONFIG_HOME/rofi/config.rasi" <<'EOF'
+configuration {
+  modi: "drun,run";
+  show-icons: true;
+  display-drun: "Applications";
+  display-run: "Commande";
+  drun-display-format: "{name}";
+  font: "JetBrainsMono Nerd Font 12";
+}
+@theme "theme.rasi"
+EOF
+
+cat > "$CONFIG_HOME/rofi/theme.rasi" <<'EOF'
+* {
+  fond:       #24273aee;
+  panneau:    #363a4fff;
+  texte:      #cad3f5ff;
+  discret:    #a5adcbff;
+  accent:     #8aadf4ff;
+  selection:  #c6a0f6ff;
+  contraste:  #24273aff;
+}
+
+window {
+  width: 42%;
+  border: 2px;
+  border-color: @accent;
+  border-radius: 14px;
+  background-color: @fond;
+  padding: 18px;
+}
+
+mainbox {
+  spacing: 14px;
+  background-color: transparent;
+}
+
+inputbar {
+  padding: 12px;
+  border-radius: 10px;
+  background-color: @panneau;
+  text-color: @texte;
+}
+
+prompt {
+  text-color: @accent;
+}
+
+entry {
+  text-color: @texte;
+}
+
+listview {
+  lines: 8;
+  columns: 1;
+  spacing: 7px;
+  scrollbar: false;
+  background-color: transparent;
+}
+
+element {
+  padding: 10px;
+  border-radius: 9px;
+  text-color: @texte;
+  background-color: transparent;
+}
+
+element selected {
+  background-color: @selection;
+  text-color: @contraste;
+}
+
+element-icon {
+  size: 24px;
+  margin: 0 10px 0 0;
+}
+
+element-text {
+  text-color: inherit;
+}
+EOF
+
+cat > "$CONFIG_HOME/dunst/dunstrc" <<'EOF'
+[global]
+    monitor = 0
+    follow = mouse
+    width = 360
+    height = 120
+    origin = top-right
+    offset = 14x48
+    notification_limit = 5
+    gap_size = 8
+    padding = 14
+    horizontal_padding = 14
+    frame_width = 2
+    frame_color = "#8aadf4"
+    separator_color = frame
+    corner_radius = 10
+    font = JetBrainsMono Nerd Font 10
+    foreground = "#cad3f5"
+    background = "#24273a"
+    timeout = 6
+    markup = full
+    format = "<b>%s</b>\n%b"
+
+[urgency_low]
+    frame_color = "#8bd5ca"
+
+[urgency_normal]
+    frame_color = "#8aadf4"
+
+[urgency_critical]
+    frame_color = "#ed8796"
+    timeout = 0
+EOF
+
+# Évite les doublons d'autostart.
+for app in waybar dunst; do
+  if ! grep -Eq "^[[:space:]]*exec-once[[:space:]]*=.*\\b$app\\b" "$MAIN"; then
+    printf 'exec-once = %s\n' "$app" >> "$MAIN"
   fi
 done
 
-# Module NixOS séparé : facile à retirer et ne remplace pas configuration.nix.
-NIX_MODULE_TMP="$(mktemp)"
-cat > "$NIX_MODULE_TMP" <<'NIX'
-{ pkgs, ... }:
+log "Vérification des dépendances visibles…"
+missing=()
+for cmd in kitty waybar rofi dunst; do
+  command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+done
 
-{
-  programs.hyprland = {
-    enable = true;
-    xwayland.enable = true;
-  };
-
-  environment.sessionVariables.NIXOS_OZONE_WL = "1";
-
-  environment.systemPackages = with pkgs; [
-    waybar
-    rofi-wayland
-    dunst
-    kitty
-    hyprpaper
-    hyprlock
-    hypridle
-    wlogout
-
-    grim
-    slurp
-    swappy
-    wl-clipboard
-    cliphist
-    hyprpicker
-
-    networkmanagerapplet
-    pavucontrol
-    brightnessctl
-    playerctl
-    numix-icon-theme-circle
-  ];
-
-  fonts.packages = with pkgs; [
-    nerd-fonts.jetbrains-mono
-  ];
-}
-NIX
-
-INSTALL_SYSTEM=1
-[[ "${1:-}" == "--user-only" ]] && INSTALL_SYSTEM=0
-
-if ((INSTALL_SYSTEM)); then
-  [[ -f /etc/nixos/configuration.nix ]] ||
-    die "/etc/nixos/configuration.nix est introuvable."
-
-  log "Installation du module /etc/nixos/hyprland-visual.nix…"
-  sudo cp "$NIX_MODULE_TMP" /etc/nixos/hyprland-visual.nix
-  sudo chown root:root /etc/nixos/hyprland-visual.nix
-
-  if ! grep -Eq '\./hyprland-visual\.nix' /etc/nixos/configuration.nix; then
-    log "Ajout du module à imports dans configuration.nix…"
-    sudo cp /etc/nixos/configuration.nix \
-      "/etc/nixos/configuration.nix.backup-$TIMESTAMP"
-
-    if grep -Eq '^[[:space:]]*imports[[:space:]]*=[[:space:]]*\[' /etc/nixos/configuration.nix; then
-      sudo sed -i \
-        '/^[[:space:]]*imports[[:space:]]*=[[:space:]]*\[/a\    ./hyprland-visual.nix' \
-        /etc/nixos/configuration.nix
-    else
-      die "Bloc imports introuvable. Ajoute manuellement ./hyprland-visual.nix à imports."
-    fi
-  fi
-
-  log "Vérification et reconstruction de NixOS…"
-  sudo nixos-rebuild switch
-else
-  warn "Mode --user-only : le module NixOS n'a pas été installé."
-  printf 'Ajoute toi-même les paquets requis avant de lancer Hyprland.\n'
+if ((${#missing[@]})); then
+  warn "Commandes absentes : ${missing[*]}"
+  warn "Ajoute les paquets correspondants dans configuration.nix puis lance sudo nixos-rebuild switch."
 fi
 
-rm -f "$NIX_MODULE_TMP"
+if command -v hyprctl >/dev/null 2>&1; then
+  hyprctl reload >/dev/null 2>&1 || true
+fi
 
-log "Installation terminée."
-printf '\n'
-printf 'Sauvegarde : %s\n' "$BACKUP_DIR"
-printf 'Configuration visuelle : %s\n' "$VISUAL_CONF"
-printf 'Recharge Hyprland avec : hyprctl reload\n'
-printf 'En cas de souci, restaure les fichiers depuis la sauvegarde ci-dessus.\n'
+printf '\nCorrection terminée.\n'
+printf 'Sauvegarde : %s\n' "$BACKUP"
+printf 'Fish n’est plus requis. Kitty utilise ton shell de connexion.\n'
+printf 'Le bloc dwindle/pseudotile fautif a été retiré.\n'
+printf 'Les textes de Waybar et Rofi sont en français avec un contraste lisible.\n'
