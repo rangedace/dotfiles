@@ -83,11 +83,19 @@ done
 for item in background .icons; do
   source="$SOURCE_HOME/$item"
   target="$HOME/$item"
-  if [[ -e "$source" ]]; then
+
+  if [[ -d "$source" ]]; then
     backup_path "$target"
     mkdir -p "$target"
     rsync -a "$source/" "$target/"
     log "Copié : ~/$item"
+  elif [[ -f "$source" || -L "$source" ]]; then
+    backup_path "$target"
+    mkdir -p "$(dirname "$target")"
+    rsync -a "$source" "$target"
+    log "Copié : ~/$item"
+  else
+    warn "$item absent du dépôt actuel, élément ignoré."
   fi
 done
 
