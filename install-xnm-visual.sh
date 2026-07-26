@@ -357,7 +357,7 @@ cat > "$NIX_OUT" <<'EOF'
   environment.systemPackages = with pkgs; [
     # Barre, lanceur, notifications, terminal, menu de session
     waybar
-    rofi-wayland
+    rofi # rofi-wayland a été fusionné dans rofi (nixpkgs, 09/2025)
     dunst
     libnotify
     kitty
