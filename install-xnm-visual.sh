@@ -96,9 +96,24 @@ copy .config/gtk-3.0/gtk.css             "$CONFIG_HOME/gtk-3.0/gtk.css"
 copy .config/gtk-4.0/settings.ini        "$CONFIG_HOME/gtk-4.0/settings.ini"
 copy .config/gtk-4.0/gtk.css             "$CONFIG_HOME/gtk-4.0/gtk.css"
 copy .config/xsettingsd/xsettingsd.conf  "$CONFIG_HOME/xsettingsd/xsettingsd.conf"
-copy .config/Kvantum                     "$CONFIG_HOME/Kvantum"
 copy .config/starship.toml               "$CONFIG_HOME/starship.toml"
 copy .gtkrc-2.0                          "$HOME/.gtkrc-2.0"
+
+# Qt : le dépôt amont livre une copie « theme# » sans le .svg, donc inutilisable.
+# On pointe directement sur le thème fourni par le paquet catppuccin-kvantum.
+backup_path "$CONFIG_HOME/Kvantum/kvantum.kvconfig"
+mkdir -p "$CONFIG_HOME/Kvantum"
+cat > "$CONFIG_HOME/Kvantum/kvantum.kvconfig" <<'EOF'
+[General]
+theme=catppuccin-macchiato-teal
+EOF
+
+# Les noms de thème de .gtkrc-2.0 datent d'anciennes versions des paquets ;
+# on les aligne sur ce que produisent catppuccin-gtk et Colloid aujourd'hui.
+sed -i \
+  -e 's/^gtk-theme-name=.*/gtk-theme-name="catppuccin-macchiato-teal-standard"/' \
+  -e 's/^gtk-icon-theme-name=.*/gtk-icon-theme-name="Colloid-Teal-Dark"/' \
+  "$HOME/.gtkrc-2.0"
 
 # Curseurs Catppuccin Macchiato Teal (fournis dans le dépôt, aucun paquet requis)
 copy .icons "$HOME/.icons"
@@ -184,8 +199,11 @@ log "Écriture du thème Hyprland (~/.config/hypr/xnm-visual.conf)…"
 backup_path "$CONFIG_HOME/hypr/xnm-visual.conf"
 cat > "$CONFIG_HOME/hypr/xnm-visual.conf" <<'EOF'
 # Visuel repris de XNM1/linux-nixos-hyprland-config-dotfiles.
-# Nécessite « source = ~/.config/hypr/macchiato.conf » avant ce fichier.
 # Aucun moniteur, raccourci, shell ou script externe n'est imposé ici.
+
+# La palette est chargée ici même : l'ordre des « source » dans
+# hyprland.conf n'a donc aucune importance ($teal, $surface1, etc.).
+source = ~/.config/hypr/macchiato.conf
 
 # Curseurs : hyprcursor lit le nom du manifest, XCursor le nom du dossier
 env = HYPRCURSOR_THEME,Catppuccin-Macchiato-Teal
@@ -283,7 +301,6 @@ if [[ ! -f "$MAIN" ]]; then
 # Configuration minimale. Adapte moniteurs et raccourcis à ton matériel.
 monitor = , preferred, auto, 1
 
-source = ~/.config/hypr/macchiato.conf
 source = ~/.config/hypr/xnm-visual.conf
 
 exec-once = waybar
@@ -298,12 +315,17 @@ bind = SUPER SHIFT, L, exec, hyprlock
 bind = SUPER SHIFT, Q, killactive
 EOF
 else
-  # macchiato.conf doit être chargé avant xnm-visual.conf (variables $teal, etc.)
-  if ! grep -q 'hypr/macchiato.conf' "$MAIN"; then
-    printf '\nsource = ~/.config/hypr/macchiato.conf\n' >> "$MAIN"
-  fi
+  # xnm-visual.conf charge lui-même la palette : l'ordre est indifférent.
   if ! grep -q 'hypr/xnm-visual.conf' "$MAIN"; then
-    printf 'source = ~/.config/hypr/xnm-visual.conf\n' >> "$MAIN"
+    printf '\nsource = ~/.config/hypr/xnm-visual.conf\n' >> "$MAIN"
+  fi
+  # Une ligne « source = …/macchiato.conf » ajoutée par une version
+  # précédente de ce script devient inutile : on la neutralise pour éviter
+  # un double chargement de la palette.
+  sed -i 's|^\([[:space:]]*source[[:space:]]*=[[:space:]]*~/\.config/hypr/macchiato\.conf\)|# \1|' "$MAIN"
+
+  if grep -q 'ilyamiro-visual' "$MAIN"; then
+    warn "hyprland.conf référence encore ilyamiro-visual.conf : retire cette ligne, les deux thèmes se marcheraient dessus."
   fi
   for app in waybar dunst hyprpaper xsettingsd; do
     if ! grep -Eq "^[[:space:]]*exec-once[[:space:]]*=.*\b${app}\b" "$MAIN"; then
@@ -327,7 +349,10 @@ cat > "$NIX_OUT" <<'EOF'
     xwayland.enable = true;
   };
 
-  environment.sessionVariables.NIXOS_OZONE_WL = "1";
+  environment.sessionVariables = {
+    NIXOS_OZONE_WL = "1";
+    QT_STYLE_OVERRIDE = "kvantum";
+  };
 
   environment.systemPackages = with pkgs; [
     # Barre, lanceur, notifications, terminal, menu de session
@@ -348,15 +373,29 @@ cat > "$NIX_OUT" <<'EOF'
     pavucontrol
     # btop bottom  # optionnel : clics CPU / RAM / disque de la barre
 
-    # Thèmes GTK / Qt / icônes
+    # Thème GTK -> share/themes/catppuccin-macchiato-teal-standard
     (catppuccin-gtk.override {
       accents = [ "teal" ];
       size = "standard";
       variant = "macchiato";
     })
-    colloid-icon-theme
+
+    # Icônes -> share/icons/Colloid-Teal-Dark (sans l'override, seul le bleu
+    # est construit) et share/icons/Numix-Circle (taskbar Waybar + Rofi)
+    (colloid-icon-theme.override {
+      colorVariants = [ "teal" ];
+      schemeVariants = [ "default" ];
+    })
     numix-icon-theme-circle
-    kdePackages.qtstyleplugin-kvantum
+
+    # Qt -> share/Kvantum/catppuccin-macchiato-teal
+    (catppuccin-kvantum.override {
+      accent = "teal";
+      variant = "macchiato";
+    })
+    qt6Packages.qtstyleplugin-kvantum
+    libsForQt5.qtstyleplugin-kvantum
+
     xsettingsd
   ];
 
@@ -376,6 +415,22 @@ for cmd in waybar rofi dunst kitty wlogout hyprpaper hyprlock starship playerctl
   command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
 done
 
+# Les configs GTK/Qt/icônes pointent sur ces dossiers : sans eux, aucun thème
+# ne s'applique (paquets absents ou nommés autrement dans ta version nixpkgs).
+themes_missing=()
+for theme in \
+  themes/catppuccin-macchiato-teal-standard \
+  icons/Colloid-Teal-Dark \
+  icons/Numix-Circle \
+  Kvantum/catppuccin-macchiato-teal
+do
+  found=""
+  for root in /run/current-system/sw/share "$HOME/.nix-profile/share" "$HOME/.local/share" /usr/share; do
+    [[ -e "$root/$theme" ]] && { found=1; break; }
+  done
+  [[ -n "$found" ]] || themes_missing+=("$theme")
+done
+
 printf '\n\033[1;32mVisuel XNM1 installé.\033[0m\n'
 printf 'Sauvegarde des anciens fichiers : %s\n' "$BACKUP"
 printf 'Paquets à installer : %s\n' "$NIX_OUT"
@@ -386,6 +441,13 @@ printf 'Exclus : IA, Fish, Helix, Yazi, Zellij, qutebrowser, moniteurs, raccourc
 
 if ((${#missing[@]})); then
   warn "Commandes absentes : ${missing[*]}"
+fi
+
+if ((${#themes_missing[@]})); then
+  warn "Thèmes absents : ${themes_missing[*]}"
+fi
+
+if ((${#missing[@]} || ${#themes_missing[@]})); then
   warn "Importe $NIX_OUT dans configuration.nix puis « sudo nixos-rebuild switch »."
 fi
 
